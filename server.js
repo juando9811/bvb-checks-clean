@@ -7,11 +7,11 @@ const app = express();
 app.use(bodyParser.urlencoded({ extended: true }));
 app.use(bodyParser.json());
 
-// ================= ENV =================
+// ===== ENV =====
 const SLACK_TOKEN = process.env.TOKEN;
 const CHANNEL = process.env.CHANNEL;
 
-// ================= FIREBASE (SECRET FILE) =================
+// ===== FIREBASE (desde Secret File en Render) =====
 const serviceAccount = require("/etc/secrets/bvb-checks.json");
 
 admin.initializeApp({
@@ -20,7 +20,7 @@ admin.initializeApp({
 
 const db = admin.firestore();
 
-// ================= HORARIOS =================
+// ===== HORARIOS =====
 const horarios = [
   "9:30 - 10:00",
   "12:00 - 12:30",
@@ -31,44 +31,42 @@ const horarios = [
   "12:00",
 ];
 
-// ================= GENERAR BLOQUES =================
-function generarBlocks(estados) {
-  let blocks = [];
+// ===== GENERAR BLOQUES =====
+function generarBlocks(data) {
+  const blocks = [];
 
   blocks.push({
     type: "section",
     text: {
       type: "mrkdwn",
-      text: "📋 *BVB Checks del día*",
+      text: "*📋 BVB Checks del día*",
     },
   });
 
-  for (let horario of horarios) {
-    const slot = estados[horario] || {};
+  horarios.forEach((horario) => {
+    const slot = data[horario] || {};
 
-    let text = `🕐 *${horario}*\n`;
+    let text = `⏰ *${horario}*\n`;
 
     if (!slot.takenBy) {
       text += "_Disponible_";
     } else {
-      text += `🟢 Taken by @${slot.takenBy}\n`;
+      text += `👤 Tomado por <@${slot.takenBy}>`;
       if (slot.doneBy) {
-        text += `✅ Done by @${slot.doneBy}`;
+        text += `\n✅ Done by <@${slot.doneBy}>`;
       }
     }
 
-    let elements = [];
+    const actions = [];
 
     if (!slot.takenBy) {
-      elements.push({
+      actions.push({
         type: "button",
         text: { type: "plain_text", text: "Take" },
         action_id: `take_${horario}`,
       });
-    }
-
-    if (slot.takenBy && !slot.doneBy) {
-      elements.push({
+    } else if (!slot.doneBy) {
+      actions.push({
         type: "button",
         text: { type: "plain_text", text: "Done" },
         action_id: `done_${horario}`,
@@ -80,38 +78,32 @@ function generarBlocks(estados) {
       text: { type: "mrkdwn", text },
     });
 
-    if (elements.length > 0) {
+    if (actions.length > 0) {
       blocks.push({
         type: "actions",
-        elements,
+        elements: actions,
       });
     }
-  }
+  });
 
   return blocks;
 }
 
-// ================= MENSAJE DIARIO =================
+// ===== ENVIAR MENSAJE =====
 app.get("/send", async (req, res) => {
-  const today = new Date().toISOString().split("T")[0];
+  const docRef = db.collection("bvb").doc("today");
 
-  const ref = db.collection("bvb-checks").doc(today);
-  const doc = await ref.get();
+  const initialData = {};
+  horarios.forEach((h) => (initialData[h] = {}));
 
-  let data = doc.exists ? doc.data() : {};
-
-  if (!doc.exists) {
-    await ref.set({});
-  }
-
-  const blocks = generarBlocks(data);
+  await docRef.set(initialData);
 
   const response = await axios.post(
     "https://slack.com/api/chat.postMessage",
     {
       channel: CHANNEL,
       text: "BVB Checks del día",
-      blocks,
+      blocks: generarBlocks(initialData),
     },
     {
       headers: {
@@ -121,24 +113,25 @@ app.get("/send", async (req, res) => {
     }
   );
 
-  res.send(response.data);
+  // Guardamos el thread_ts
+  await db.collection("config").doc("thread").set({
+    thread_ts: response.data.ts,
+  });
+
+  res.send("Mensaje enviado");
 });
 
-// ================= INTERACCIONES =================
+// ===== INTERACCIONES =====
 app.post("/slack/interactions", async (req, res) => {
   const payload = JSON.parse(req.body.payload);
-
   const action = payload.actions[0];
-  const user = payload.user.username;
+  const user = payload.user.id;
+
   const horario = action.action_id.replace("take_", "").replace("done_", "");
 
-  const today = new Date().toISOString().split("T")[0];
-  const ref = db.collection("bvb-checks").doc(today);
-
-  const doc = await ref.get();
-  let data = doc.data() || {};
-
-  if (!data[horario]) data[horario] = {};
+  const docRef = db.collection("bvb").doc("today");
+  const doc = await docRef.get();
+  const data = doc.data();
 
   if (action.action_id.startsWith("take_")) {
     if (!data[horario].takenBy) {
@@ -150,8 +143,9 @@ app.post("/slack/interactions", async (req, res) => {
     data[horario].doneBy = user;
   }
 
-  await ref.set(data);
+  await docRef.set(data);
 
+  // 🔥 ACTUALIZA EL MENSAJE PRINCIPAL
   await axios.post(
     "https://slack.com/api/chat.update",
     {
@@ -168,12 +162,27 @@ app.post("/slack/interactions", async (req, res) => {
     }
   );
 
+  // 🔥 RESPUESTA EN THREAD
+  await axios.post(
+    "https://slack.com/api/chat.postMessage",
+    {
+      channel: CHANNEL,
+      thread_ts: payload.message.ts,
+      text: `<@${user}> actualizó ${horario}`,
+    },
+    {
+      headers: {
+        Authorization: `Bearer ${SLACK_TOKEN}`,
+        "Content-Type": "application/json",
+      },
+    }
+  );
+
   res.sendStatus(200);
 });
 
-// ================= SERVER =================
+// ===== SERVER =====
 const PORT = process.env.PORT || 10000;
-
 app.listen(PORT, () => {
-  console.log("Server corriendo en", PORT);
+  console.log(`Server corriendo en ${PORT}`);
 });
