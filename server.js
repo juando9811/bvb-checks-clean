@@ -29,7 +29,7 @@ const horarios = [
   "12:00",
 ];
 
-// 🔧 Generar bloques Slack
+// 🔧 BLOQUES SLACK
 function generarBlocks(data = {}) {
   const blocks = [];
 
@@ -93,7 +93,7 @@ function generarBlocks(data = {}) {
   return blocks;
 }
 
-// 🚀 Enviar mensaje inicial
+// 🚀 ENVIAR MENSAJE
 async function enviarMensaje() {
   const hoy = new Date().toISOString().split("T")[0];
   const ref = db.collection("bvb-checks").doc(hoy);
@@ -117,7 +117,7 @@ async function enviarMensaje() {
   );
 }
 
-// ⏰ CRON 9AM Colombia
+// ⏰ CRON 9AM COLOMBIA
 cron.schedule(
   "0 9 * * *",
   async () => {
@@ -129,16 +129,18 @@ cron.schedule(
   }
 );
 
-// 🧠 INTERACCIONES SLACK (FIX ERROR 500)
+// 🔥 INTERACCIONES SLACK (FIX TIMEOUT)
 app.post("/slack/interactions", async (req, res) => {
+  // 🔥 RESPUESTA INMEDIATA (CLAVE)
+  res.status(200).send();
+
   try {
     const payload = JSON.parse(req.body.payload);
 
-    if (!payload.actions || payload.actions.length === 0) {
-      return res.status(200).send();
-    }
+    if (!payload.actions || payload.actions.length === 0) return;
 
     const action = payload.actions[0];
+
     const user =
       payload.user?.username ||
       payload.user?.name ||
@@ -186,15 +188,12 @@ app.post("/slack/interactions", async (req, res) => {
         },
       }
     );
-
-    return res.status(200).send(); // 🔥 clave
   } catch (error) {
     console.error("❌ ERROR SLACK:", error);
-    return res.status(200).send(); // 🔥 evita error en Slack
   }
 });
 
-// 🔥 ENDPOINT TEST (opcional)
+// 🧪 TEST
 app.get("/test", async (req, res) => {
   await enviarMensaje();
   res.send("Mensaje enviado");
