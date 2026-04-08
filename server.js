@@ -32,6 +32,11 @@ const horarios = [
   "12:00",
 ];
 
+// ===== FECHA DINÁMICA =====
+function getToday() {
+  return new Date().toISOString().split("T")[0];
+}
+
 // ===== BLOCKS =====
 function generarBlocks(data) {
   const blocks = [];
@@ -89,28 +94,27 @@ function generarBlocks(data) {
 
 // ===== CREAR MENSAJE =====
 async function sendDailyMessage() {
-  const docRef = db.collection("bvb").doc("today");
+  const today = getToday();
+  const docRef = db.collection("bvb-checks").doc(today);
 
   const initialData = {};
   horarios.forEach((h) => (initialData[h] = {}));
 
   await docRef.set(initialData);
 
-  // 1️⃣ mensaje principal
+  // mensaje principal
   const main = await axios.post(
     "https://slack.com/api/chat.postMessage",
     {
       channel: CHANNEL,
-      text: "📋 BVB Checks del día",
+      text: `📋 BVB Checks del día (${today})`,
     },
     {
-      headers: {
-        Authorization: `Bearer ${SLACK_TOKEN}`,
-      },
+      headers: { Authorization: `Bearer ${SLACK_TOKEN}` },
     }
   );
 
-  // 2️⃣ mensaje dentro del thread
+  // mensaje thread (el importante)
   const thread = await axios.post(
     "https://slack.com/api/chat.postMessage",
     {
@@ -120,16 +124,14 @@ async function sendDailyMessage() {
       blocks: generarBlocks(initialData),
     },
     {
-      headers: {
-        Authorization: `Bearer ${SLACK_TOKEN}`,
-      },
+      headers: { Authorization: `Bearer ${SLACK_TOKEN}` },
     }
   );
 
-  // guardar ambos TS
   await db.collection("config").doc("thread").set({
     main_ts: main.data.ts,
     thread_ts: thread.data.ts,
+    date: today,
   });
 }
 
@@ -141,27 +143,32 @@ app.post("/slack/interactions", async (req, res) => {
 
   const horario = action.action_id.replace("take_", "").replace("done_", "");
 
-  const docRef = db.collection("bvb").doc("today");
+  const today = getToday();
+  const docRef = db.collection("bvb-checks").doc(today);
+
   const doc = await docRef.get();
   const data = doc.data();
 
+  // lógica
   if (action.action_id.startsWith("take_")) {
     if (!data[horario].takenBy) {
       data[horario].takenBy = user;
+      data[horario].takenAt = new Date().toISOString();
     }
   }
 
   if (action.action_id.startsWith("done_")) {
     data[horario].doneBy = user;
+    data[horario].doneAt = new Date().toISOString();
   }
 
   await docRef.set(data);
 
-  // obtener thread_ts guardado
+  // obtener thread actual
   const config = await db.collection("config").doc("thread").get();
   const { thread_ts } = config.data();
 
-  // 🔥 ACTUALIZA SOLO EL MENSAJE DEL THREAD
+  // actualizar mensaje del thread
   await axios.post(
     "https://slack.com/api/chat.update",
     {
@@ -171,9 +178,7 @@ app.post("/slack/interactions", async (req, res) => {
       blocks: generarBlocks(data),
     },
     {
-      headers: {
-        Authorization: `Bearer ${SLACK_TOKEN}`,
-      },
+      headers: { Authorization: `Bearer ${SLACK_TOKEN}` },
     }
   );
 
@@ -186,7 +191,7 @@ app.get("/send", async (req, res) => {
   res.send("Mensaje enviado");
 });
 
-// ===== CRON 9:00 AM COLOMBIA =====
+// ===== CRON =====
 cron.schedule(
   "0 9 * * *",
   async () => {
