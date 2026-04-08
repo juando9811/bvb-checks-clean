@@ -2,6 +2,7 @@ const express = require("express");
 const bodyParser = require("body-parser");
 const axios = require("axios");
 const admin = require("firebase-admin");
+const cron = require("node-cron");
 
 const app = express();
 app.use(bodyParser.urlencoded({ extended: true }));
@@ -11,7 +12,7 @@ app.use(bodyParser.json());
 const SLACK_TOKEN = process.env.TOKEN;
 const CHANNEL = process.env.CHANNEL;
 
-// ===== FIREBASE (desde Secret File en Render) =====
+// ===== FIREBASE =====
 const serviceAccount = require("/etc/secrets/bvb-checks.json");
 
 admin.initializeApp({
@@ -31,16 +32,13 @@ const horarios = [
   "12:00",
 ];
 
-// ===== GENERAR BLOQUES =====
+// ===== BLOCKS =====
 function generarBlocks(data) {
   const blocks = [];
 
   blocks.push({
     type: "section",
-    text: {
-      type: "mrkdwn",
-      text: "*📋 BVB Checks del día*",
-    },
+    text: { type: "mrkdwn", text: "*📋 BVB Checks del día*" },
   });
 
   horarios.forEach((horario) => {
@@ -51,7 +49,7 @@ function generarBlocks(data) {
     if (!slot.takenBy) {
       text += "_Disponible_";
     } else {
-      text += `👤 Tomado por <@${slot.takenBy}>`;
+      text += `🟢 Taken by <@${slot.takenBy}>`;
       if (slot.doneBy) {
         text += `\n✅ Done by <@${slot.doneBy}>`;
       }
@@ -89,8 +87,8 @@ function generarBlocks(data) {
   return blocks;
 }
 
-// ===== ENVIAR MENSAJE =====
-app.get("/send", async (req, res) => {
+// ===== CREAR MENSAJE =====
+async function sendDailyMessage() {
   const docRef = db.collection("bvb").doc("today");
 
   const initialData = {};
@@ -98,28 +96,42 @@ app.get("/send", async (req, res) => {
 
   await docRef.set(initialData);
 
-  const response = await axios.post(
+  // 1️⃣ mensaje principal
+  const main = await axios.post(
     "https://slack.com/api/chat.postMessage",
     {
       channel: CHANNEL,
-      text: "BVB Checks del día",
+      text: "📋 BVB Checks del día",
+    },
+    {
+      headers: {
+        Authorization: `Bearer ${SLACK_TOKEN}`,
+      },
+    }
+  );
+
+  // 2️⃣ mensaje dentro del thread
+  const thread = await axios.post(
+    "https://slack.com/api/chat.postMessage",
+    {
+      channel: CHANNEL,
+      thread_ts: main.data.ts,
+      text: "Cargando checks...",
       blocks: generarBlocks(initialData),
     },
     {
       headers: {
         Authorization: `Bearer ${SLACK_TOKEN}`,
-        "Content-Type": "application/json",
       },
     }
   );
 
-  // Guardamos el thread_ts
+  // guardar ambos TS
   await db.collection("config").doc("thread").set({
-    thread_ts: response.data.ts,
+    main_ts: main.data.ts,
+    thread_ts: thread.data.ts,
   });
-
-  res.send("Mensaje enviado");
-});
+}
 
 // ===== INTERACCIONES =====
 app.post("/slack/interactions", async (req, res) => {
@@ -145,41 +157,46 @@ app.post("/slack/interactions", async (req, res) => {
 
   await docRef.set(data);
 
-  // 🔥 ACTUALIZA EL MENSAJE PRINCIPAL
+  // obtener thread_ts guardado
+  const config = await db.collection("config").doc("thread").get();
+  const { thread_ts } = config.data();
+
+  // 🔥 ACTUALIZA SOLO EL MENSAJE DEL THREAD
   await axios.post(
     "https://slack.com/api/chat.update",
     {
       channel: CHANNEL,
-      ts: payload.message.ts,
+      ts: thread_ts,
       text: "BVB Checks del día",
       blocks: generarBlocks(data),
     },
     {
       headers: {
         Authorization: `Bearer ${SLACK_TOKEN}`,
-        "Content-Type": "application/json",
-      },
-    }
-  );
-
-  // 🔥 RESPUESTA EN THREAD
-  await axios.post(
-    "https://slack.com/api/chat.postMessage",
-    {
-      channel: CHANNEL,
-      thread_ts: payload.message.ts,
-      text: `<@${user}> actualizó ${horario}`,
-    },
-    {
-      headers: {
-        Authorization: `Bearer ${SLACK_TOKEN}`,
-        "Content-Type": "application/json",
       },
     }
   );
 
   res.sendStatus(200);
 });
+
+// ===== ENDPOINT MANUAL =====
+app.get("/send", async (req, res) => {
+  await sendDailyMessage();
+  res.send("Mensaje enviado");
+});
+
+// ===== CRON 9:00 AM COLOMBIA =====
+cron.schedule(
+  "0 9 * * *",
+  async () => {
+    console.log("⏰ Enviando mensaje diario...");
+    await sendDailyMessage();
+  },
+  {
+    timezone: "America/Bogota",
+  }
+);
 
 // ===== SERVER =====
 const PORT = process.env.PORT || 10000;
