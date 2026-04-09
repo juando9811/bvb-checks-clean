@@ -11,7 +11,7 @@ app.use(bodyParser.json());
 const CHANNEL = process.env.CHANNEL;
 const SLACK_TOKEN = process.env.TOKEN;
 
-// 🔥 FIREBASE DESDE SECRET FILE
+// 🔥 FIREBASE
 const admin = require("firebase-admin");
 
 const serviceAccount = JSON.parse(
@@ -38,7 +38,7 @@ const horarios = [
 // 🔒 evitar duplicados
 let lastRunDate = null;
 
-// 📦 GENERAR BLOQUES
+// 📦 BLOQUES
 function generarBlocks(data) {
   return horarios.flatMap((hora) => {
     const item = data[hora] || {};
@@ -91,13 +91,12 @@ function generarBlocks(data) {
   });
 }
 
-// 🚀 ENVIAR MENSAJE DIARIO
+// 🚀 ENVÍO DIARIO
 async function enviarMensajeDiario() {
   const hoy = new Date().toISOString().split("T")[0];
 
-  // 🔒 evitar duplicados
   if (lastRunDate === hoy) {
-    console.log("⚠️ Ya se envió hoy");
+    console.log("⚠️ Ya enviado hoy");
     return;
   }
 
@@ -108,9 +107,7 @@ async function enviarMensajeDiario() {
 
   if (!doc.exists) {
     const base = {};
-    horarios.forEach((h) => {
-      base[h] = {};
-    });
+    horarios.forEach((h) => (base[h] = {}));
     await ref.set(base);
   }
 
@@ -148,14 +145,14 @@ async function enviarMensajeDiario() {
     }
   );
 
-  console.log("✅ Mensaje enviado correctamente");
+  console.log("✅ Mensaje enviado");
 }
 
-// ⏰ CRON 9AM COLOMBIA
+// ⏰ CRON COLOMBIA
 cron.schedule(
   "0 9 * * *",
   () => {
-    console.log("⏰ Ejecutando envío diario...");
+    console.log("⏰ Ejecutando envío...");
     enviarMensajeDiario();
   },
   {
@@ -163,9 +160,9 @@ cron.schedule(
   }
 );
 
-// 🔥 INTERACCIONES SLACK (ULTRA RÁPIDO)
+// 🔥 INTERACCIONES
 app.post("/slack/interactions", async (req, res) => {
-  res.status(200).send(); // ⚡ RESPUESTA INMEDIATA
+  res.status(200).send(); // ⚡ inmediato
 
   const payload = JSON.parse(req.body.payload);
   const action = payload.actions[0];
@@ -190,6 +187,25 @@ app.post("/slack/interactions", async (req, res) => {
 
   await ref.set(data);
 
+  // 🔥 HISTORIAL EN SLACK (NUEVO)
+  await axios.post(
+    "https://slack.com/api/chat.postMessage",
+    {
+      channel: CHANNEL,
+      thread_ts: payload.message.thread_ts || payload.message.ts,
+      text: `${
+        action.action_id.startsWith("take_") ? "🟢 *Taken*" : "✅ *Done*"
+      } - *${horario}* por <@${user}>`,
+    },
+    {
+      headers: {
+        Authorization: `Bearer ${SLACK_TOKEN}`,
+        "Content-Type": "application/json",
+      },
+    }
+  );
+
+  // 🔄 ACTUALIZAR MENSAJE
   await axios.post(
     "https://slack.com/api/chat.update",
     {
@@ -207,13 +223,13 @@ app.post("/slack/interactions", async (req, res) => {
   );
 });
 
-// 🧪 ENDPOINT MANUAL
+// 🧪 TEST
 app.get("/send-now", async (req, res) => {
   await enviarMensajeDiario();
-  res.send("Mensaje enviado manualmente");
+  res.send("OK");
 });
 
-// 🚀 START SERVER
+// 🚀 START
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
   console.log(`🚀 Server corriendo en puerto ${PORT}`);
