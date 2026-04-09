@@ -87,48 +87,70 @@ function generarBlocks(data) {
 
 // 🚀 ENVÍO
 async function enviarMensaje() {
-  const hoy = new Date().toISOString().split("T")[0];
+  try {
+    const hoy = new Date().toISOString().split("T")[0];
 
-  const ref = db.collection("bvb-checks").doc(hoy);
-  const doc = await ref.get();
+    const ref = db.collection("bvb-checks").doc(hoy);
+    const doc = await ref.get();
 
-  if (!doc.exists) {
-    const base = {};
-    horarios.forEach((h) => (base[h] = {}));
-    await ref.set(base);
+    if (!doc.exists) {
+      const base = {};
+      horarios.forEach((h) => (base[h] = {}));
+      await ref.set(base);
+    }
+
+    const data = (await ref.get()).data();
+
+    // 🧵 1. MENSAJE PRINCIPAL
+    const res = await axios.post(
+      "https://slack.com/api/chat.postMessage",
+      {
+        channel: CHANNEL,
+        text: "📋 BVB Checks del día",
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${SLACK_TOKEN}`,
+          "Content-Type": "application/json",
+        },
+      }
+    );
+
+    if (!res.data.ok) {
+      console.error("❌ Error Slack main:", res.data);
+      return;
+    }
+
+    const thread_ts = res.data.ts;
+
+    console.log("✅ thread_ts:", thread_ts);
+
+    // 🧵 2. MENSAJE CON BLOQUES (EL IMPORTANTE)
+    const res2 = await axios.post(
+      "https://slack.com/api/chat.postMessage",
+      {
+        channel: CHANNEL,
+        thread_ts: thread_ts,
+        text: "Horarios del día",
+        blocks: generarBlocks(data),
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${SLACK_TOKEN}`,
+          "Content-Type": "application/json",
+        },
+      }
+    );
+
+    if (!res2.data.ok) {
+      console.error("❌ Error Slack blocks:", res2.data);
+    } else {
+      console.log("✅ Thread con bloques enviado");
+    }
+
+  } catch (error) {
+    console.error("🔥 ERROR GENERAL:", error.message);
   }
-
-  const data = (await ref.get()).data();
-
-  const res = await axios.post(
-    "https://slack.com/api/chat.postMessage",
-    {
-      channel: CHANNEL,
-      text: "📋 BVB Checks del día",
-    },
-    {
-      headers: {
-        Authorization: `Bearer ${SLACK_TOKEN}`,
-        "Content-Type": "application/json",
-      },
-    }
-  );
-
-  await axios.post(
-    "https://slack.com/api/chat.postMessage",
-    {
-      channel: CHANNEL,
-      thread_ts: res.data.ts,
-      text: "📋 BVB Checks del día",
-      blocks: generarBlocks(data),
-    },
-    {
-      headers: {
-        Authorization: `Bearer ${SLACK_TOKEN}`,
-        "Content-Type": "application/json",
-      },
-    }
-  );
 }
 
 // ⏰ CRON
