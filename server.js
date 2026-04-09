@@ -29,7 +29,7 @@ const horarios = [
   "12:00",
 ];
 
-// 🔧 BLOQUES SLACK
+// 🔧 BLOQUES
 function generarBlocks(data = {}) {
   const blocks = [];
 
@@ -117,7 +117,7 @@ async function enviarMensaje() {
   );
 }
 
-// ⏰ CRON 9AM COLOMBIA
+// ⏰ CRON
 cron.schedule(
   "0 9 * * *",
   async () => {
@@ -129,9 +129,9 @@ cron.schedule(
   }
 );
 
-// 🔥 INTERACCIONES SLACK (FIX TIMEOUT)
+// 🔥 INTERACCIONES (MEJORA UX + SIN DELAY)
 app.post("/slack/interactions", async (req, res) => {
-  // 🔥 RESPUESTA INMEDIATA (CLAVE)
+  // ✅ RESPUESTA INMEDIATA A SLACK
   res.status(200).send();
 
   try {
@@ -149,6 +149,14 @@ app.post("/slack/interactions", async (req, res) => {
 
     const horario = action.value;
 
+    // ⚡ RESPUESTA VISUAL INMEDIATA (UX)
+    if (payload.response_url) {
+      await axios.post(payload.response_url, {
+        replace_original: false,
+        text: "⏳ Actualizando...",
+      });
+    }
+
     const hoy = new Date().toISOString().split("T")[0];
     const ref = db.collection("bvb-checks").doc(hoy);
 
@@ -159,20 +167,19 @@ app.post("/slack/interactions", async (req, res) => {
       data[horario] = {};
     }
 
-    // TAKE
+    // 🚫 evitar doble take
     if (action.action_id.startsWith("take_")) {
-      if (!data[horario].takenBy) {
-        data[horario].takenBy = user;
-      }
+      if (data[horario].takenBy) return;
+      data[horario].takenBy = user;
     }
 
-    // DONE
     if (action.action_id.startsWith("done_")) {
       data[horario].doneBy = user;
     }
 
     await ref.set(data);
 
+    // 🔄 UPDATE MENSAJE
     await axios.post(
       "https://slack.com/api/chat.update",
       {
