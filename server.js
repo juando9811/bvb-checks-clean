@@ -35,7 +35,7 @@ const horarios = [
   "12:00",
 ];
 
-// 📦 BLOQUES
+// 📦 GENERAR BLOQUES (FIX FINAL)
 function generarBlocks(data) {
   return horarios.flatMap((hora) => {
     const item = data[hora] || {};
@@ -52,40 +52,46 @@ function generarBlocks(data) {
       texto += `✅ Done by <@${item.doneBy}>\n`;
     }
 
+    let elements = [];
+
+    if (!item.takenBy) {
+      elements.push({
+        type: "button",
+        text: { type: "plain_text", text: "Take" },
+        action_id: `take_${hora}`,
+        style: "primary",
+      });
+    } else if (!item.doneBy) {
+      elements.push({
+        type: "button",
+        text: { type: "plain_text", text: "Done" },
+        action_id: `done_${hora}`,
+        style: "danger",
+      });
+    }
+
     return [
       {
         type: "section",
-        text: { type: "mrkdwn", text: texto },
+        text: {
+          type: "mrkdwn",
+          text: texto,
+        },
       },
-      {
-        type: "actions",
-        elements: [
-          !item.takenBy
-            ? {
-                type: "button",
-                text: { type: "plain_text", text: "Take" },
-                action_id: `take_${hora}`,
-                style: "primary",
-              }
-            : !item.doneBy
-            ? {
-                type: "button",
-                text: { type: "plain_text", text: "Done" },
-                action_id: `done_${hora}`,
-                style: "danger",
-              }
-            : {
-                type: "plain_text",
-                text: "✔ Completado",
-              },
-        ],
-      },
+      ...(elements.length > 0
+        ? [
+            {
+              type: "actions",
+              elements: elements,
+            },
+          ]
+        : []),
       { type: "divider" },
     ];
   });
 }
 
-// 🚀 ENVÍO
+// 🚀 ENVIAR MENSAJE
 async function enviarMensaje() {
   try {
     const hoy = new Date().toISOString().split("T")[0];
@@ -101,7 +107,7 @@ async function enviarMensaje() {
 
     const data = (await ref.get()).data();
 
-    // 🧵 1. MENSAJE PRINCIPAL
+    // 🧵 MENSAJE PRINCIPAL
     const res = await axios.post(
       "https://slack.com/api/chat.postMessage",
       {
@@ -117,16 +123,14 @@ async function enviarMensaje() {
     );
 
     if (!res.data.ok) {
-      console.error("❌ Error Slack main:", res.data);
+      console.error("❌ Slack error:", res.data);
       return;
     }
 
     const thread_ts = res.data.ts;
 
-    console.log("✅ thread_ts:", thread_ts);
-
-    // 🧵 2. MENSAJE CON BLOQUES (EL IMPORTANTE)
-    const res2 = await axios.post(
+    // 🧵 THREAD CON HORARIOS
+    await axios.post(
       "https://slack.com/api/chat.postMessage",
       {
         channel: CHANNEL,
@@ -142,22 +146,17 @@ async function enviarMensaje() {
       }
     );
 
-    if (!res2.data.ok) {
-      console.error("❌ Error Slack blocks:", res2.data);
-    } else {
-      console.log("✅ Thread con bloques enviado");
-    }
-
-  } catch (error) {
-    console.error("🔥 ERROR GENERAL:", error.message);
+    console.log("✅ Mensaje enviado correctamente");
+  } catch (err) {
+    console.error("🔥 ERROR:", err.message);
   }
 }
 
-// ⏰ CRON
+// ⏰ CRON COLOMBIA
 cron.schedule(
   "0 9 * * *",
   () => {
-    console.log("⏰ Ejecutando...");
+    console.log("⏰ Ejecutando envío diario...");
     enviarMensaje();
   },
   {
@@ -165,12 +164,10 @@ cron.schedule(
   }
 );
 
-// 🔥 INTERACCIONES (FIX REAL)
+// 🔥 INTERACCIONES (SIN DELAY)
 app.post("/slack/interactions", (req, res) => {
-  // ✅ RESPUESTA INMEDIATA (CRÍTICO)
-  res.status(200).send();
+  res.status(200).send(); // ⚡ respuesta inmediata
 
-  // 🚀 PROCESO ASYNC
   setImmediate(async () => {
     try {
       const payload = JSON.parse(req.body.payload);
@@ -198,7 +195,7 @@ app.post("/slack/interactions", (req, res) => {
 
       await ref.set(data);
 
-      // 🔄 UPDATE
+      // 🔄 ACTUALIZAR MENSAJE
       await axios.post(
         "https://slack.com/api/chat.update",
         {
@@ -220,13 +217,13 @@ app.post("/slack/interactions", (req, res) => {
   });
 });
 
-// 🧪 TEST
+// 🧪 TEST MANUAL
 app.get("/send-now", async (req, res) => {
   await enviarMensaje();
   res.send("OK");
 });
 
-// START
+// 🚀 START
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
   console.log("🚀 Server listo");
