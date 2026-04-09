@@ -12,7 +12,7 @@ app.use(bodyParser.json());
 const CHANNEL = process.env.CHANNEL;
 const SLACK_TOKEN = process.env.TOKEN;
 
-// 🔥 FIREBASE DESDE SECRET FILE
+// 🔥 FIREBASE
 const serviceAccount = JSON.parse(
   fs.readFileSync("/etc/secrets/bvb-checks.json", "utf8")
 );
@@ -34,7 +34,7 @@ const horarios = [
   "12:00",
 ];
 
-// 🔹 GENERAR BLOQUES
+// 🔹 BLOQUES
 function generarBloques(data = {}) {
   let blocks = [];
 
@@ -87,13 +87,24 @@ function generarBloques(data = {}) {
   return blocks;
 }
 
-// 🚀 CRON DIARIO (CON TIMEZONE COLOMBIA)
+// 🚀 CRON DIARIO (ANTI DUPLICADOS)
 cron.schedule(
-  "0 9 * * *"
+  "0 9 * * *",
   async () => {
     console.log("⏰ Ejecutando cron Colombia:", new Date());
 
     const hoy = new Date().toISOString().split("T")[0];
+    const ref = db.collection("bvb-checks").doc(hoy);
+
+    // 🔴 BLOQUE ANTI-SPAM (CLAVE)
+    const doc = await ref.get();
+    if (doc.exists) {
+      console.log("⚠️ Ya se envió hoy, no repetir");
+      return;
+    }
+
+    // crear doc vacío
+    await ref.set({ createdAt: new Date() });
 
     // mensaje principal
     const parent = await axios.post(
@@ -109,18 +120,22 @@ cron.schedule(
 
     const thread_ts = parent.data.ts;
 
-    const ref = db.collection("bvb-checks").doc(hoy);
-    const doc = await ref.get();
-    let data = doc.exists ? doc.data() : {};
+    // guardar thread en firebase (pro tip)
+    await ref.set(
+      {
+        thread_ts,
+      },
+      { merge: true }
+    );
 
-    // mensaje dentro del thread
+    // enviar contenido
     await axios.post(
       "https://slack.com/api/chat.postMessage",
       {
         channel: CHANNEL,
         thread_ts,
         text: "BVB Checks del día",
-        blocks: generarBloques(data),
+        blocks: generarBloques({}),
       },
       {
         headers: { Authorization: `Bearer ${SLACK_TOKEN}` },
@@ -128,16 +143,15 @@ cron.schedule(
     );
   },
   {
-    timezone: "America/Bogota", // 🔥 CLAVE
+    timezone: "America/Bogota",
   }
 );
 
-// ⚡ INTERACCIONES ULTRA RÁPIDAS
+// ⚡ INTERACCIONES
 app.post("/slack/interactions", async (req, res) => {
   const payload = JSON.parse(req.body.payload);
 
-  // 🔥 RESPUESTA INMEDIATA
-  res.status(200).send();
+  res.status(200).send(); // 🔥 RESPUESTA INMEDIATA
 
   try {
     const action = payload.actions[0];
@@ -162,9 +176,8 @@ app.post("/slack/interactions", async (req, res) => {
       data[horario].doneBy = user;
     }
 
-    await ref.set(data);
+    await ref.set(data, { merge: true });
 
-    // actualizar mensaje
     await axios.post(
       "https://slack.com/api/chat.update",
       {
