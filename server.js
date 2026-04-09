@@ -89,7 +89,7 @@ function generarBloques(data = {}) {
 
 // 🚀 CRON DIARIO (CON TIMEZONE COLOMBIA)
 cron.schedule(
-  "*/1 * * * *",
+  "0 9 * * *"
   async () => {
     console.log("⏰ Ejecutando cron Colombia:", new Date());
 
