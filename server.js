@@ -1,21 +1,12 @@
+require("dotenv").config();
 const express = require("express");
 const axios = require("axios");
 const bodyParser = require("body-parser");
-const admin = require("firebase-admin");
 const cron = require("node-cron");
-const fs = require("fs");
 
-const app = express();
-app.use(bodyParser.urlencoded({ extended: true }));
-app.use(bodyParser.json());
+const admin = require("firebase-admin");
 
-const CHANNEL = process.env.CHANNEL;
-const SLACK_TOKEN = process.env.TOKEN;
-
-// 🔥 FIREBASE
-const serviceAccount = JSON.parse(
-  fs.readFileSync("/etc/secrets/bvb-checks.json", "utf8")
-);
+const serviceAccount = JSON.parse(process.env.FIREBASE_CREDENTIALS);
 
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
@@ -23,7 +14,13 @@ admin.initializeApp({
 
 const db = admin.firestore();
 
-// ⏰ HORARIOS
+const app = express();
+app.use(bodyParser.urlencoded({ extended: true }));
+app.use(bodyParser.json());
+
+const SLACK_TOKEN = process.env.TOKEN;
+const CHANNEL = process.env.CHANNEL;
+
 const horarios = [
   "9:30 - 10:00",
   "12:00 - 12:30",
@@ -34,42 +31,27 @@ const horarios = [
   "12:00",
 ];
 
-// 🔹 BLOQUES
-function generarBloques(data = {}) {
+// =================
+// BLOQUES UI
+// =================
+function generarBloques(data) {
   let blocks = [];
 
-  for (let horario of horarios) {
-    let slot = data[horario] || {};
+  blocks.push({
+    type: "section",
+    text: { type: "mrkdwn", text: "📋 *BVB Checks del día*" },
+  });
 
-    let text = `⏰ *${horario}*\n`;
+  for (let h of horarios) {
+    let text = `⏰ *${h}*\n`;
 
-    if (!slot.takenBy) {
+    if (!data[h] || !data[h].takenBy) {
       text += "_Disponible_";
     } else {
-      text += `🟢 Taken by <@${slot.takenBy}>\n`;
-      if (slot.doneBy) {
-        text += `✅ Done by <@${slot.doneBy}>`;
+      text += `🟢 Taken by @${data[h].takenBy}\n`;
+      if (data[h].doneBy) {
+        text += `✅ Done by @${data[h].doneBy}`;
       }
-    }
-
-    let actionBlock = {
-      type: "actions",
-      elements: [],
-    };
-
-    if (!slot.takenBy) {
-      actionBlock.elements.push({
-        type: "button",
-        text: { type: "plain_text", text: "Take" },
-        action_id: `take_${horario}`,
-      });
-    } else if (!slot.doneBy) {
-      actionBlock.elements.push({
-        type: "button",
-        text: { type: "plain_text", text: "Done" },
-        action_id: `done_${horario}`,
-        style: "primary",
-      });
     }
 
     blocks.push({
@@ -77,8 +59,28 @@ function generarBloques(data = {}) {
       text: { type: "mrkdwn", text },
     });
 
-    if (actionBlock.elements.length > 0) {
-      blocks.push(actionBlock);
+    if (!data[h] || !data[h].takenBy) {
+      blocks.push({
+        type: "actions",
+        elements: [
+          {
+            type: "button",
+            text: { type: "plain_text", text: "Take" },
+            action_id: `take_${h}`,
+          },
+        ],
+      });
+    } else if (!data[h].doneBy) {
+      blocks.push({
+        type: "actions",
+        elements: [
+          {
+            type: "button",
+            text: { type: "plain_text", text: "Done" },
+            action_id: `done_${h}`,
+          },
+        ],
+      });
     }
 
     blocks.push({ type: "divider" });
@@ -87,26 +89,21 @@ function generarBloques(data = {}) {
   return blocks;
 }
 
-// 🚀 CRON DIARIO (ANTI DUPLICADOS)
+// =================
+// CRON 9AM COLOMBIA
+// =================
 cron.schedule(
   "0 9 * * *",
   async () => {
-    console.log("⏰ Ejecutando cron Colombia:", new Date());
+    const fecha = new Date().toISOString().slice(0, 10);
 
-    const hoy = new Date().toISOString().split("T")[0];
-    const ref = db.collection("bvb-checks").doc(hoy);
-
-    // 🔴 BLOQUE ANTI-SPAM (CLAVE)
-    const doc = await ref.get();
-    if (doc.exists) {
-      console.log("⚠️ Ya se envió hoy, no repetir");
+    // 🚫 evitar duplicados
+    const doc = await db.collection("bvb-checks").doc(fecha).get();
+    if (doc.exists && doc.data().thread_ts) {
+      console.log("⚠️ Ya enviado hoy");
       return;
     }
 
-    // crear doc vacío
-    await ref.set({ createdAt: new Date() });
-
-    // mensaje principal
     const parent = await axios.post(
       "https://slack.com/api/chat.postMessage",
       {
@@ -120,79 +117,123 @@ cron.schedule(
 
     const thread_ts = parent.data.ts;
 
-    // guardar thread en firebase (pro tip)
-    await ref.set(
-      {
-        thread_ts,
-      },
-      { merge: true }
-    );
-
-    // enviar contenido
     await axios.post(
       "https://slack.com/api/chat.postMessage",
       {
         channel: CHANNEL,
         thread_ts,
-        text: "BVB Checks del día",
         blocks: generarBloques({}),
       },
       {
         headers: { Authorization: `Bearer ${SLACK_TOKEN}` },
       }
     );
+
+    await db.collection("bvb-checks").doc(fecha).set({
+      thread_ts,
+    });
   },
-  {
-    timezone: "America/Bogota",
-  }
+  { timezone: "America/Bogota" }
 );
 
-// ⚡ INTERACCIONES
+// =================
+// INTERACCIONES
+// =================
 app.post("/slack/interactions", async (req, res) => {
-  const payload = JSON.parse(req.body.payload);
-
-  res.status(200).send(); // 🔥 RESPUESTA INMEDIATA
+  // 🔥 RESPUESTA INMEDIATA
+  res.status(200).send();
 
   try {
+    const payload = JSON.parse(req.body.payload);
     const action = payload.actions[0];
-    const user = payload.user.id;
-    const horario = action.action_id.replace("take_", "").replace("done_", "");
 
-    const hoy = new Date().toISOString().split("T")[0];
-    const ref = db.collection("bvb-checks").doc(hoy);
+    const user = payload.user.username;
+    const actionId = action.action_id;
+    const horario = actionId.replace("take_", "").replace("done_", "");
 
+    const fecha = new Date().toISOString().slice(0, 10);
+    const hoy = fecha;
+
+    const ref = db.collection("bvb-checks").doc(fecha);
     const doc = await ref.get();
+
     let data = doc.exists ? doc.data() : {};
+    const thread_ts = data.thread_ts;
 
     if (!data[horario]) data[horario] = {};
 
-    if (action.action_id.startsWith("take_")) {
+    // =================
+    // TAKE
+    // =================
+    if (actionId.startsWith("take_")) {
       if (!data[horario].takenBy) {
         data[horario].takenBy = user;
+
+        await axios.post(
+          "https://slack.com/api/chat.postMessage",
+          {
+            channel: CHANNEL,
+            thread_ts,
+            text: `🟢 @${user} tomó *${horario}*`,
+          },
+          {
+            headers: { Authorization: `Bearer ${SLACK_TOKEN}` },
+          }
+        );
       }
     }
 
-    if (action.action_id.startsWith("done_")) {
-      data[horario].doneBy = user;
+    // =================
+    // DONE
+    // =================
+    if (actionId.startsWith("done_")) {
+      if (!data[horario].doneBy) {
+        data[horario].doneBy = user;
+
+        await axios.post(
+          "https://slack.com/api/chat.postMessage",
+          {
+            channel: CHANNEL,
+            thread_ts,
+            text: `✅ @${user} completó *${horario}*`,
+          },
+          {
+            headers: { Authorization: `Bearer ${SLACK_TOKEN}` },
+          }
+        );
+      }
     }
 
+    // 🔒 guardar
     await ref.set(data, { merge: true });
 
-    await axios.post(
-      "https://slack.com/api/chat.update",
-      {
-        channel: CHANNEL,
-        ts: payload.message.ts,
-        text: "BVB Checks del día",
-        blocks: generarBloques(data),
-      },
-      {
-        headers: { Authorization: `Bearer ${SLACK_TOKEN}` },
-      }
-    );
+    // =================
+    // SOLO ACTUALIZAR HOY
+    // =================
+    const mensajeFecha = new Date(payload.message.ts * 1000)
+      .toISOString()
+      .slice(0, 10);
+
+    if (mensajeFecha === hoy) {
+      await axios.post(
+        "https://slack.com/api/chat.update",
+        {
+          channel: CHANNEL,
+          ts: payload.message.ts,
+          blocks: generarBloques(data),
+        },
+        {
+          headers: { Authorization: `Bearer ${SLACK_TOKEN}` },
+        }
+      );
+    }
+
   } catch (err) {
     console.error("❌ Error:", err);
   }
 });
 
-app.listen(10000, () => console.log("🚀 Server running"));
+// =================
+app.listen(10000, () => {
+  console.log("🚀 Server listo");
+});
