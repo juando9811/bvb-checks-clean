@@ -1,16 +1,9 @@
 const express = require("express");
-const bodyParser = require("body-parser");
 const axios = require("axios");
-const cron = require("node-cron");
-
+const bodyParser = require("body-parser");
 const admin = require("firebase-admin");
-const serviceAccount = require("/etc/secrets/bvb-checks.json");
-
-admin.initializeApp({
-  credential: admin.credential.cert(serviceAccount),
-});
-
-const db = admin.firestore();
+const cron = require("node-cron");
+const fs = require("fs");
 
 const app = express();
 app.use(bodyParser.urlencoded({ extended: true }));
@@ -19,6 +12,18 @@ app.use(bodyParser.json());
 const CHANNEL = process.env.CHANNEL;
 const SLACK_TOKEN = process.env.TOKEN;
 
+// 🔥 FIREBASE DESDE SECRET FILE (Render)
+const serviceAccount = JSON.parse(
+  fs.readFileSync("/etc/secrets/bvb-checks.json", "utf8")
+);
+
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccount),
+});
+
+const db = admin.firestore();
+
+// ⏰ HORARIOS
 const horarios = [
   "9:30 - 10:00",
   "12:00 - 12:30",
@@ -29,51 +34,41 @@ const horarios = [
   "12:00",
 ];
 
-// 🔧 BLOQUES
-function generarBlocks(data = {}) {
-  const blocks = [];
-
-  blocks.push({
-    type: "section",
-    text: {
-      type: "mrkdwn",
-      text: "📝 *BVB Checks del día*",
-    },
-  });
+// 🔹 GENERAR BLOQUES
+function generarBloques(data = {}) {
+  let blocks = [];
 
   for (let horario of horarios) {
-    const slot = data[horario] || {};
+    let slot = data[horario] || {};
 
     let text = `⏰ *${horario}*\n`;
 
     if (!slot.takenBy) {
       text += "_Disponible_";
     } else {
-      text += `🟢 Taken by @${slot.takenBy}\n`;
+      text += `🟢 Taken by <@${slot.takenBy}>\n`;
       if (slot.doneBy) {
-        text += `✅ Done by @${slot.doneBy}`;
+        text += `✅ Done by <@${slot.doneBy}>`;
       }
     }
 
-    const actions = [];
+    let actionBlock = {
+      type: "actions",
+      elements: [],
+    };
 
     if (!slot.takenBy) {
-      actions.push({
+      actionBlock.elements.push({
         type: "button",
         text: { type: "plain_text", text: "Take" },
-        style: "primary",
-        value: horario,
         action_id: `take_${horario}`,
       });
-    }
-
-    if (slot.takenBy && !slot.doneBy) {
-      actions.push({
+    } else if (!slot.doneBy) {
+      actionBlock.elements.push({
         type: "button",
         text: { type: "plain_text", text: "Done" },
-        style: "primary",
-        value: horario,
         action_id: `done_${horario}`,
+        style: "primary",
       });
     }
 
@@ -82,95 +77,79 @@ function generarBlocks(data = {}) {
       text: { type: "mrkdwn", text },
     });
 
-    if (actions.length > 0) {
-      blocks.push({
-        type: "actions",
-        elements: actions,
-      });
+    if (actionBlock.elements.length > 0) {
+      blocks.push(actionBlock);
     }
+
+    blocks.push({ type: "divider" });
   }
 
   return blocks;
 }
 
-// 🚀 ENVIAR MENSAJE
-async function enviarMensaje() {
+// 🚀 ENVÍO DIARIO (THREAD + MENSAJES INTERNOS)
+cron.schedule("0 9 * * *", async () => {
   const hoy = new Date().toISOString().split("T")[0];
+
+  // mensaje principal
+  const parent = await axios.post(
+    "https://slack.com/api/chat.postMessage",
+    {
+      channel: CHANNEL,
+      text: "📋 BVB Checks del día",
+    },
+    {
+      headers: { Authorization: `Bearer ${SLACK_TOKEN}` },
+    }
+  );
+
+  const thread_ts = parent.data.ts;
+
+  // documento del día
   const ref = db.collection("bvb-checks").doc(hoy);
-
   const doc = await ref.get();
-  const data = doc.exists ? doc.data() : {};
 
+  let data = doc.exists ? doc.data() : {};
+
+  // enviar todos los horarios en el thread
   await axios.post(
     "https://slack.com/api/chat.postMessage",
     {
       channel: CHANNEL,
-      text: "BVB Checks del día",
-      blocks: generarBlocks(data),
+      thread_ts,
+      text: "📋 BVB Checks del día",
+      blocks: generarBloques(data),
     },
     {
-      headers: {
-        Authorization: `Bearer ${SLACK_TOKEN}`,
-        "Content-Type": "application/json",
-      },
+      headers: { Authorization: `Bearer ${SLACK_TOKEN}` },
     }
   );
-}
+});
 
-// ⏰ CRON
-cron.schedule(
-  "0 9 * * *",
-  async () => {
-    console.log("⏰ Enviando mensaje diario...");
-    await enviarMensaje();
-  },
-  {
-    timezone: "America/Bogota",
-  }
-);
-
-// 🔥 INTERACCIONES (MEJORA UX + SIN DELAY)
+// ⚡ INTERACCIONES (ULTRA RÁPIDO)
 app.post("/slack/interactions", async (req, res) => {
-  // ✅ RESPUESTA INMEDIATA A SLACK
+  const payload = JSON.parse(req.body.payload);
+
+  // 🔥 RESPUESTA INMEDIATA (CLAVE)
   res.status(200).send();
 
   try {
-    const payload = JSON.parse(req.body.payload);
-
-    if (!payload.actions || payload.actions.length === 0) return;
-
     const action = payload.actions[0];
-
-    const user =
-      payload.user?.username ||
-      payload.user?.name ||
-      payload.user?.id ||
-      "unknown";
-
-    const horario = action.value;
-
-    // ⚡ RESPUESTA VISUAL INMEDIATA (UX)
-    if (payload.response_url) {
-      await axios.post(payload.response_url, {
-        replace_original: false,
-        text: "⏳ Actualizando...",
-      });
-    }
+    const user = payload.user.id;
+    const horario = action.action_id.replace("take_", "").replace("done_", "");
 
     const hoy = new Date().toISOString().split("T")[0];
     const ref = db.collection("bvb-checks").doc(hoy);
 
     const doc = await ref.get();
-    const data = doc.exists ? doc.data() : {};
+    let data = doc.exists ? doc.data() : {};
 
-    if (!data[horario]) {
-      data[horario] = {};
-    }
+    if (!data[horario]) data[horario] = {};
 
-    // 🚫 evitar doble take
     if (action.action_id.startsWith("take_")) {
-      if (data[horario].takenBy) return;
-      data[horario].takenBy = user;
+      if (!data[horario].takenBy) {
+        data[horario].takenBy = user;
+      }
     }
 
     if (action.action_id.startsWith("done_")) {
@@ -179,34 +158,22 @@ app.post("/slack/interactions", async (req, res) => {
 
     await ref.set(data);
 
-    // 🔄 UPDATE MENSAJE
+    // 🔄 actualizar mensaje en thread
     await axios.post(
       "https://slack.com/api/chat.update",
       {
         channel: CHANNEL,
         ts: payload.message.ts,
         text: "BVB Checks del día",
-        blocks: generarBlocks(data),
+        blocks: generarBloques(data),
       },
       {
-        headers: {
-          Authorization: `Bearer ${SLACK_TOKEN}`,
-          "Content-Type": "application/json",
-        },
+        headers: { Authorization: `Bearer ${SLACK_TOKEN}` },
       }
     );
-  } catch (error) {
-    console.error("❌ ERROR SLACK:", error);
+  } catch (err) {
+    console.error(err);
   }
 });
 
-// 🧪 TEST
-app.get("/test", async (req, res) => {
-  await enviarMensaje();
-  res.send("Mensaje enviado");
-});
-
-const PORT = process.env.PORT || 10000;
-app.listen(PORT, () => {
-  console.log(`🚀 Server corriendo en ${PORT}`);
-});
+app.listen(10000, () => console.log("🚀 Server running"));
