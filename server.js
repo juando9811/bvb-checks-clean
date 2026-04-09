@@ -10,8 +10,9 @@ app.use(bodyParser.json());
 const CHANNEL = process.env.CHANNEL;
 const SLACK_TOKEN = process.env.TOKEN;
 
-// 🧠 Estado en memoria (RESET DIARIO)
+// 🧠 MEMORIA
 let data = {};
+let currentThreadTs = null;
 
 // 🕒 HORARIOS
 const horarios = [
@@ -24,18 +25,21 @@ const horarios = [
   "12:00",
 ];
 
-// 🔁 RESET DIARIO
+// 🔁 RESET SEGURO
 function resetData() {
   data = {};
   horarios.forEach((h) => {
-    data[h] = {};
+    data[h] = {
+      takenBy: null,
+      doneBy: null,
+    };
   });
 }
 
-// 📦 BLOQUES
+// 📦 GENERAR BLOQUES (SAFE)
 function generarBlocks() {
   return horarios.flatMap((hora) => {
-    const item = data[hora] || {};
+    const item = data[hora] || { takenBy: null, doneBy: null };
 
     let texto = `⏰ *${hora}*\n`;
 
@@ -69,10 +73,7 @@ function generarBlocks() {
     return [
       {
         type: "section",
-        text: {
-          type: "mrkdwn",
-          text: texto,
-        },
+        text: { type: "mrkdwn", text: texto },
       },
       ...(elements.length
         ? [
@@ -98,35 +99,33 @@ async function enviarMensaje() {
       text: "📋 BVB Checks del día",
     },
     {
-      headers: {
-        Authorization: `Bearer ${SLACK_TOKEN}`,
-      },
+      headers: { Authorization: `Bearer ${SLACK_TOKEN}` },
     }
   );
 
-  const thread_ts = res.data.ts;
+  currentThreadTs = res.data.ts;
 
   await axios.post(
     "https://slack.com/api/chat.postMessage",
     {
       channel: CHANNEL,
-      thread_ts,
+      thread_ts: currentThreadTs,
       text: "Horarios del día",
       blocks: generarBlocks(),
     },
     {
-      headers: {
-        Authorization: `Bearer ${SLACK_TOKEN}`,
-      },
+      headers: { Authorization: `Bearer ${SLACK_TOKEN}` },
     }
   );
+
+  console.log("✅ Mensaje enviado");
 }
 
 // ⏰ CRON COLOMBIA
 cron.schedule(
   "0 9 * * *",
   () => {
-    console.log("⏰ Enviando checks...");
+    console.log("⏰ Ejecutando envío...");
     enviarMensaje();
   },
   {
@@ -134,9 +133,9 @@ cron.schedule(
   }
 );
 
-// ⚡ INTERACCIONES SIN DELAY
+// ⚡ INTERACCIONES SIN DELAY + SAFE
 app.post("/slack/interactions", (req, res) => {
-  res.status(200).send(); // RESPUESTA INMEDIATA
+  res.status(200).send(); // ⚡ responde inmediato
 
   setImmediate(async () => {
     try {
@@ -144,9 +143,17 @@ app.post("/slack/interactions", (req, res) => {
       const action = payload.actions[0];
       const user = payload.user.id;
 
-      const horario = action.action_id
+      let horario = action.action_id
         .replace("take_", "")
         .replace("done_", "");
+
+      // 🔥 FIX CLAVE
+      if (!data[horario]) {
+        data[horario] = {
+          takenBy: null,
+          doneBy: null,
+        };
+      }
 
       if (action.action_id.startsWith("take_")) {
         if (!data[horario].takenBy) {
@@ -167,13 +174,11 @@ app.post("/slack/interactions", (req, res) => {
           blocks: generarBlocks(),
         },
         {
-          headers: {
-            Authorization: `Bearer ${SLACK_TOKEN}`,
-          },
+          headers: { Authorization: `Bearer ${SLACK_TOKEN}` },
         }
       );
     } catch (err) {
-      console.error("ERROR:", err.message);
+      console.error("❌ ERROR:", err.message);
     }
   });
 });
@@ -185,4 +190,5 @@ app.get("/send-now", async (req, res) => {
 });
 
 // START
-app.listen(10000, () => console.log("🚀 Running"));
+const PORT = process.env.PORT || 10000;
+app.listen(PORT, () => console.log("🚀 Server running"));
